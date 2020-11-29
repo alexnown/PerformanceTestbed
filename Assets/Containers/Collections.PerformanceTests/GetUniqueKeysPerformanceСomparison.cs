@@ -59,16 +59,15 @@ public abstract class AGetUniqueKeysPerformanceComparison<TKey, TValue>
     }
 
     [Test, Performance]
-    public void GetUniqueKeysWithFixedEarlyOut()
+    public void UniqueKeysIterator()
     {
         NativeMultiHashMap<TKey, TValue> map = default;
         Measure.Method(() =>
         {
-            var keysArray = map.FixedGetKeyArray(Allocator.TempJob);
-            keysArray.Sort();
-            int uniqueCount = keysArray.Unique();
-            Assert.AreEqual(UniqueKeysCount, uniqueCount);
-            keysArray.Dispose();
+            var it = new UniqueKeysIterator<TKey> { BucketIndex = -1, CurrentIndex = -1 };
+            int counter = 0;
+            while (map.TryMoveNextUniqueKey(ref it)) counter++;
+            Assert.AreEqual(UniqueKeysCount, counter);
         })
             .SetUp(() => map = InitializeMap())
             .CleanUp(() => map.Dispose())
@@ -104,12 +103,11 @@ public abstract class AGetUniqueKeysPerformanceComparison<TKey, TValue>
         NativeArray<int> resultsArray = default;
         Measure.Method(() =>
         {
-            var job = new CountUniqueKeysJob
+            new CountUniqueKeysJob
             {
                 Map = map,
                 Result = resultsArray
-            }.Schedule();
-            job.Complete();
+            }.Run();
             Assert.AreEqual(UniqueKeysCount, resultsArray[0]);
         })
             .SetUp(() =>
@@ -133,13 +131,12 @@ public abstract class AGetUniqueKeysPerformanceComparison<TKey, TValue>
         NativeArray<int> resultsArray = default;
         Measure.Method(() =>
         {
-            var job = new StoreKeysToHashSetJob
+            new StoreKeysToHashSetJob
             {
                 Map = map,
                 Keys = keys,
                 Result = resultsArray
-            }.Schedule();
-            job.Complete();
+            }.Run();
             Assert.AreEqual(UniqueKeysCount, resultsArray[0]);
         })
             .SetUp(() =>
@@ -164,11 +161,10 @@ public abstract class AGetUniqueKeysPerformanceComparison<TKey, TValue>
         NativeHashSet<TKey> keys = default;
         Measure.Method(() =>
         {
-            var job = new StoreKeysToHashSetParallelJob
+            new StoreKeysToHashSetParallelJob
             {
                 Keys = keys.AsParallelWriter()
-            }.Schedule(map, 1024);
-            job.Complete();
+            }.Schedule(map, 1024).Complete();
             Assert.AreEqual(UniqueKeysCount, keys.Count());
         })
             .SetUp(() =>
@@ -184,6 +180,33 @@ public abstract class AGetUniqueKeysPerformanceComparison<TKey, TValue>
             .Run();
     }
 
+    [Test, Performance]
+    public void UniqueKeysIteratorBurstedJob()
+    {
+        NativeMultiHashMap<TKey, TValue> map = default;
+        NativeArray<int> resultsArray = default;
+        Measure.Method(() =>
+        {
+            new IterateOverUniqueKeysJob
+            {
+                Map = map,
+                Result = resultsArray
+            }.Run();
+            Assert.AreEqual(UniqueKeysCount, resultsArray[0]);
+        })
+            .SetUp(() =>
+            {
+                map = InitializeMap();
+                resultsArray = new NativeArray<int>(1, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+            })
+            .CleanUp(() =>
+            {
+                map.Dispose();
+                resultsArray.Dispose();
+            })
+            .Run();
+    }
+
     [Unity.Burst.BurstCompile]
     struct CountUniqueKeysJob : IJob
     {
@@ -193,7 +216,7 @@ public abstract class AGetUniqueKeysPerformanceComparison<TKey, TValue>
         public NativeArray<int> Result;
         public void Execute()
         {
-            var keys = Map.FixedGetKeyArray(Allocator.Temp);
+            var keys = Map.GetKeyArray(Allocator.Temp);
             keys.Sort();
             Result[0] = keys.Unique();
         }
@@ -217,5 +240,21 @@ public abstract class AGetUniqueKeysPerformanceComparison<TKey, TValue>
     {
         public NativeHashSet<TKey>.ParallelWriter Keys;
         public void ExecuteNext(TKey key) => Keys.Add(key);
+    }
+
+    [Unity.Burst.BurstCompile]
+    struct IterateOverUniqueKeysJob : IJob
+    {
+        [ReadOnly]
+        public NativeMultiHashMap<TKey, TValue> Map;
+        [WriteOnly]
+        public NativeArray<int> Result;
+        public void Execute()
+        {
+            var it = new UniqueKeysIterator<TKey> { BucketIndex = -1, CurrentIndex = -1 };
+            int counter = 0;
+            while (Map.TryMoveNextUniqueKey(ref it)) counter++;
+            Result[0] = counter;
+        }
     }
 }

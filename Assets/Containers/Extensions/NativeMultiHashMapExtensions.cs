@@ -24,33 +24,51 @@ namespace Unity.Collections
                 }
             }
         }
-        public static NativeArray<TKey> FixedGetKeyArray<TKey, TValue>(this NativeMultiHashMap<TKey, TValue> map, Allocator allocator)
-             where TKey : struct, System.IEquatable<TKey>
-             where TValue : struct
+
+        public static bool TryMoveNextUniqueKey<TKey, TValue>(this NativeMultiHashMap<TKey, TValue> map, ref UniqueKeysIterator<TKey> it)
+         where TKey : unmanaged, System.IEquatable<TKey>
+         where TValue : struct
         {
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-            AtomicSafetyHandle.CheckReadAndThrow(map.m_Safety);
-#endif
-            var result = new NativeArray<TKey>(map.m_MultiHashMapData.Count(), allocator, NativeArrayOptions.UninitializedMemory);
-            FixedGetKeyArray(map.m_MultiHashMapData.m_Buffer, result);
-            return result;
-        }
-        internal static void FixedGetKeyArray<TKey>(UnsafeHashMapData* data, NativeArray<TKey> result)
-                where TKey : struct
-        {
+            var data = map.m_MultiHashMapData.m_Buffer;
             var bucketArray = (int*)data->buckets;
             var bucketNext = (int*)data->next;
-            int count = 0;
-            int max = result.Length;
-            for (int i = 0; i <= data->bucketCapacityMask && count < max; ++i)
+            while (it.CurrentIndex != -1)
             {
-                int bucket = bucketArray[i];
-                while (bucket != -1)
+                it.CurrentIndex = bucketNext[it.CurrentIndex];
+                if (it.CurrentIndex == -1) break;
+                var key = UnsafeUtility.ReadArrayElement<TKey>(data->keys, it.CurrentIndex);
+                if (!key.Equals(it.Key))
                 {
-                    result[count++] = UnsafeUtility.ReadArrayElement<TKey>(data->keys, bucket);
-                    bucket = bucketNext[bucket];
+                    var firstIndexForReadedKey = bucketArray[it.BucketIndex];
+                    while (firstIndexForReadedKey != it.CurrentIndex)
+                    {
+                        var previousKey = UnsafeUtility.ReadArrayElement<TKey>(data->keys, firstIndexForReadedKey);
+                        if (key.Equals(previousKey)) break;
+                        firstIndexForReadedKey = bucketNext[firstIndexForReadedKey];
+                    }
+                    it.Key = key;
+                    return true;
                 }
             }
+            //first key in bucket always unique
+            while (it.BucketIndex < data->bucketCapacityMask)
+            {
+                it.BucketIndex++;
+                it.CurrentIndex = bucketArray[it.BucketIndex];
+                if (it.CurrentIndex != -1)
+                {
+                    it.Key = UnsafeUtility.ReadArrayElement<TKey>(data->keys, it.CurrentIndex);
+                    return true;
+                }
+            }
+            return false;
         }
+    }
+
+    public struct UniqueKeysIterator<TKey> where TKey : unmanaged
+    {
+        public int BucketIndex;
+        public int CurrentIndex;
+        public TKey Key;
     }
 }
